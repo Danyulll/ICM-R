@@ -1869,9 +1869,9 @@ monitor_parallel_progress <- function(outroot = "anomaly_outputs_s3", refresh_se
 
 # ------------------------------ Example --------------------------------------
 # (uncomment to run a quick pass)
-dim = 16
+dim = 128
 results_all <- run_all_anomaly_types(
-  N = 25, P = dim, M = 3,
+  N = 100, P = dim, M = 3,
   base_B = diag(3),
   base_eta = c(0.01, 0.01, 0.01),          # DECREASED: Less noise for cleaner normals
   base_kern = kernels[[1]],                 # CHANGED: Use SE kernel for smoother normals
