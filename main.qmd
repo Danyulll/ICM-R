@@ -1,0 +1,1927 @@
+---
+title: "Main"
+format: html
+editor: visual
+---
+
+# Anomalies
+
+```{r}
+# install.packages("MASS")
+# install.packages("pracma")
+library(MASS)
+library(pracma)
+
+## ----------------------------------------------------------------
+## Part 1: Generate Normal Data from an ICM
+## ----------------------------------------------------------------
+
+# Helper function for the Squared Exponential (SE) kernel
+squared_exp_kernel <- function(t, l_scale) {
+  # Creates an n x n temporal covariance matrix
+  dist_matrix_sq <- as.matrix(dist(t))^2
+  exp(-0.5 * dist_matrix_sq / l_scale^2)
+}
+
+# Main function to generate multivariate functional data
+generate_normal_data_icm <- function(n_points = 128, 
+                                     m_out = 3, 
+                                     B = diag(m_out), 
+                                     l_scale = 0.1, 
+                                     eta = rep(0.05, m_out)) {
+  # n_points: Number of time points (should be a power of 2 for wavelets later)
+  # m_out:    Number of output channels/dimensions
+  # B:        M x M coregionalization matrix
+  # l_scale:  Lengthscale for the SE kernel
+  # eta:      Vector of per-output noise variances
+  
+  # 1. Define time points
+  t <- seq(0, 1, length.out = n_points)
+  
+  # 2. Create the temporal covariance matrix Kx
+  Kx <- squared_exp_kernel(t, l_scale)
+  
+  # 3. Construct the full ICM covariance matrix K = B ⊗ Kx + diag(η) ⊗ I_n
+  # The kronecker product handles the coregionalization.
+  # The rep(eta, each=...) part creates the block-diagonal noise matrix.
+  K <- kronecker(B, Kx) + diag(rep(eta, each = n_points))
+  
+  # 4. Sample a single long vector from the multivariate normal distribution
+  mu <- rep(0, n_points * m_out)
+  y_vec <- mvrnorm(1, mu = mu, Sigma = K)
+  
+  # 5. Reshape the vector into an n x M matrix
+  y_mat <- matrix(y_vec, nrow = n_points, ncol = m_out, byrow = FALSE)
+  
+  return(list(t = t, y = y_mat))
+}
+
+## ----------------------------------------------------------------
+## Part 2: Functions to Apply Anomalies
+## ----------------------------------------------------------------
+
+# Helper for the Gaussian window function
+gaussian_window <- function(t, mu, sigma) {
+  exp(-(t - mu)^2 / (2 * sigma^2))
+}
+
+# 1. Shift Anomaly
+apply_shift_anomaly <- function(data, transient = TRUE) {
+  t <- data$t; y <- data$y
+  w <- 1
+  if (transient) {
+    mu <- runif(1, 0.3, 0.7)
+    sigma <- runif(1, 0.05, 0.15)
+    w <- gaussian_window(t, mu, sigma)
+  }
+  c <- rnorm(1, 0.3, 0.2)
+  y_anom <- y + c * w
+  return(list(t = t, y = y_anom))
+}
+
+# 2. Amplitude Anomaly
+apply_amplitude_anomaly <- function(data, transient = TRUE) {
+  t <- data$t; y <- data$y
+  w <- 1
+  if (transient) {
+    mu <- runif(1, 0.25, 0.8)
+    sigma <- runif(1, 0.05, 0.18)
+    w <- gaussian_window(t, mu, sigma)
+  }
+  gamma <- max(0.2, rnorm(1, 1.6, 0.3)) # Clamp to be >= 0.2
+  y_anom <- (1 + (gamma - 1) * w) * y
+  return(list(t = t, y = y_anom))
+}
+
+# 3. Shape Anomaly (always transient)
+apply_shape_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  mu <- runif(1, 0.2, 0.8)
+  sigma <- runif(1, 0.02, 0.08)
+  w <- gaussian_window(t, mu, sigma)
+  
+  A <- abs(rnorm(1, 0.7, 0.3))
+  f <- runif(1, 8, 16)
+  
+  y_anom <- y + A * w * sin(2 * pi * f * t)
+  return(list(t = t, y = y_anom))
+}
+
+# 4. Trend Anomaly (always persistent)
+apply_trend_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  s <- rnorm(1, 0.8, 0.4)
+  b <- rnorm(1, 0, 0.2)
+  trend <- b + s * (t - t[1])
+  y_anom <- y + trend
+  return(list(t = t, y = y_anom))
+}
+
+# 5. Phase Anomaly (always persistent)
+apply_phase_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  n_points <- nrow(y)
+  m_out <- ncol(y)
+  y_anom <- matrix(0, n_points, m_out)
+  
+  delta <- runif(1, -0.06, 0.06)
+  t_shifted <- t - delta
+  
+  # Interpolate each channel at the new shifted time points
+  for (i in 1:m_out) {
+    y_anom[, i] <- interp1(t, y[, i], xi = t_shifted, method = "linear", extrap = y[1,i])
+  }
+  
+  return(list(t = t, y = y_anom))
+}
+
+# 6. Decouple Anomaly (always persistent)
+apply_decouple_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  n_points <- nrow(y)
+  m_out <- ncol(y)
+  
+  noise <- matrix(0, n_points, m_out)
+  for (i in 1:m_out) {
+    sigma_m <- runif(1, 0.3, 0.8)
+    noise[, i] <- rnorm(n_points, 0, sigma_m)
+  }
+  
+  y_anom <- y + noise
+  return(list(t = t, y = y_anom))
+}
+
+# 7. Smoothness Anomaly (always persistent)
+apply_smoothness_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  n_points <- nrow(y)
+  m_out <- ncol(y)
+  y_anom <- y
+  
+  rho <- runif(1, 0.3, 0.7)
+  y_smooth <- y
+  
+  # Apply a 5-point moving average for smoothing
+  for (i in 3:(n_points - 2)) {
+    y_smooth[i,] <- colMeans(y[(i-2):(i+2),])
+  }
+  
+  y_anom <- (1 - rho) * y + rho * y_smooth
+  return(list(t = t, y = y_anom))
+}
+
+# 8. Noise Burst Anomaly (always transient)
+apply_noise_burst_anomaly <- function(data) {
+  t <- data$t; y <- data$y
+  n_points <- nrow(y)
+  
+  mu <- runif(1, 0.2, 0.85)
+  sigma_win <- runif(1, 0.02, 0.06)
+  w <- gaussian_window(t, mu, sigma_win)
+  
+  sigma_noise <- runif(1, 1.0, 2.0)
+  z <- rnorm(n_points, 0, sigma_noise)
+  
+  y_anom <- y + w * z
+  return(list(t = t, y = y_anom))
+}
+```
+
+```{r}
+# Set a seed for reproducibility
+set.seed(42)
+
+# --- Define ICM Parameters ---
+# Number of channels
+M <- 3 
+# A coregionalization matrix with positive correlation between channels
+B <- matrix(c(1.0, 0.7, 0.4,
+              0.7, 1.0, 0.6,
+              0.4, 0.6, 1.0), nrow = M, ncol = M)
+# Lengthscale (controls smoothness)
+L_SCALE <- 0.2
+# Noise levels per channel
+ETA <- c(0.1, 0.08, 0.12)
+
+# --- Generate Data ---
+# 1. Generate a "normal" curve
+normal_data <- generate_normal_data_icm(n_points = 256, m_out = M, B = B, l_scale = L_SCALE, eta = ETA)
+
+# 2. Apply a transient shape anomaly to the normal data
+shape_anomaly_data <- apply_shape_anomaly(normal_data)
+
+# 3. Apply a trend anomaly to the normal data
+trend_anomaly_data <- apply_trend_anomaly(normal_data)
+
+
+# --- Visualize the Results ---
+# 
+par(mfrow = c(1, 3), mar = c(4, 4, 2, 1)) # Set up a 1x3 plot grid
+
+# Plot Normal Data
+matplot(normal_data$t, normal_data$y, type = 'l', lty = 1,
+        main = "Normal Data (ICM)", xlab = "Time", ylab = "Value",
+        ylim = range(normal_data$y, shape_anomaly_data$y, trend_anomaly_data$y))
+
+# Plot Shape Anomaly
+matplot(shape_anomaly_data$t, shape_anomaly_data$y, type = 'l', lty = 1,
+        main = "Shape Anomaly", xlab = "Time", ylab = "",
+        ylim = range(normal_data$y, shape_anomaly_data$y, trend_anomaly_data$y))
+
+# Plot Trend Anomaly
+matplot(trend_anomaly_data$t, trend_anomaly_data$y, type = 'l', lty = 1,
+        main = "Trend Anomaly", xlab = "Time", ylab = "",
+        ylim = range(normal_data$y, shape_anomaly_data$y, trend_anomaly_data$y))
+```
+# Kernels and Wavelets
+
+```{r}
+## ----------------------------------------------------------------
+## Part 1: Collection of Kernel Functions
+## ----------------------------------------------------------------
+
+# We already have the Squared Exponential kernel from Step 1
+squared_exp_kernel <- function(t, l_scale = 0.1) {
+  dist_sq <- as.matrix(dist(t))^2
+  exp(-0.5 * dist_sq / l_scale^2)
+}
+
+# Matérn 3/2 Kernel
+matern32_kernel <- function(t, l_scale = 0.1) {
+  d <- as.matrix(dist(t))
+  r <- d / l_scale
+  term <- sqrt(3) * r
+  (1 + term) * exp(-term)
+}
+
+# Matérn 5/2 Kernel (smoother than 3/2)
+matern52_kernel <- function(t, l_scale = 0.1) {
+  d <- as.matrix(dist(t))
+  r <- d / l_scale
+  term1 <- sqrt(5) * r
+  term2 <- 5 * r^2 / 3
+  (1 + term1 + term2) * exp(-term1)
+}
+
+# Rational Quadratic Kernel
+# 'alpha_rq' controls the mixture of scales.
+rational_quad_kernel <- function(t, l_scale = 0.1, alpha_rq = 1.0) {
+  dist_sq <- as.matrix(dist(t))^2
+  (1 + dist_sq / (2 * alpha_rq * l_scale^2))^(-alpha_rq)
+}
+
+# Periodic Kernel
+# 'period' defines the distance between repetitions.
+periodic_kernel <- function(t, l_scale = 0.1, period = 0.25) {
+  d <- as.matrix(dist(t))
+  exp(-2 * sin(pi * d / period)^2 / l_scale^2)
+}
+
+# Exponential Kernel (Ornstein-Uhlenbeck process)
+exponential_kernel <- function(t, l_scale = 0.1) {
+  d <- as.matrix(dist(t))
+  exp(-d / l_scale)
+}
+```
+
+```{r}
+## ----------------------------------------------------------------
+## Part 2: Haar Wavelet Basis Matrix
+## ----------------------------------------------------------------
+
+haar_basis_matrix <- function(n) {
+  # n: The number of points, must be a power of 2.
+  
+  # Check if n is a power of 2
+  if (log2(n) %% 1 != 0) {
+    stop("n must be a power of 2.")
+  }
+  
+  # Initialize with the identity matrix
+  H <- diag(n)
+  
+  # Iteratively build the basis from the finest scale down
+  k <- n
+  while (k > 1) {
+    k <- k / 2
+    
+    # Create temporary matrix to store the new basis
+    H_new <- matrix(0, nrow = n, ncol = n)
+    
+    for (i in 1:k) {
+      # Averaging (scaling functions)
+      H_new[, i] <- (H[, 2 * i - 1] + H[, 2 * i]) / sqrt(2)
+      # Differencing (wavelet functions)
+      H_new[, i + k] <- (H[, 2 * i - 1] - H[, 2 * i]) / sqrt(2)
+    }
+    
+    # Copy over the unchanged columns from the previous level
+    if (2 * k < n) {
+        H_new[, (2*k+1):n] <- H[, (2*k+1):n]
+    }
+    
+    H <- H_new
+  }
+  
+  # Reorder columns to be more intuitive:
+  # The first column is the scaling function (average)
+  # Subsequent columns are wavelets from coarsest to finest scale.
+  H_ordered <- H
+  H_ordered[, 1] <- H[, 1]
+  H_ordered[, 2] <- H[, 2]
+  
+  if (n > 2) {
+    c_idx <- 3
+    for (k in 2:log2(n-1)) {
+        num_in_level <- 2^(k-1)
+        start_old <- num_in_level+1
+        end_old <- 2*num_in_level
+        
+        start_new <- c_idx
+        end_new <- c_idx + num_in_level - 1
+        
+        H_ordered[, start_new:end_new] <- H[, start_old:end_old]
+        c_idx <- end_new + 1
+    }
+  }
+  
+  return(H_ordered)
+}
+```
+
+```{r}
+# --- Kernel Example ---
+# Define time points
+time_points <- seq(0, 1, length.out = 8)
+
+# Calculate the Matérn 5/2 covariance matrix
+Kx_matern52 <- matern52_kernel(time_points, l_scale = 0.2)
+
+cat("Matérn 5/2 Covariance Matrix (8x8):\n")
+print(round(Kx_matern52, 2))
+
+
+# --- Haar Wavelet Example ---
+# Generate the basis for 8 points
+H8 <- haar_basis_matrix(8)
+
+cat("\nHaar Basis Matrix (8x8):\n")
+print(round(H8, 2))
+
+# Verify orthonormality (this should be the identity matrix)
+cat("\nVerification (t(H) %*% H):\n")
+print(round(t(H8) %*% H8, 2))
+
+
+# Visualize the first 4 Haar basis vectors
+# 
+par(mfrow = c(2, 2), mar = c(3, 3, 2, 1))
+plot(time_points, H8[, 1], type = 's', main = "Basis 1 (Scaling Func)", ylim = c(-1,1))
+plot(time_points, H8[, 2], type = 's', main = "Basis 2 (Wavelet)", ylim = c(-1,1))
+plot(time_points, H8[, 3], type = 's', main = "Basis 3 (Wavelet)", ylim = c(-1,1))
+plot(time_points, H8[, 4], type = 's', main = "Basis 4 (Wavelet)", ylim = c(-1,1))
+```
+
+# ICM Likelihood
+
+```{r}
+## ----------------------------------------------------------------
+## Step 3: The ICM Log-Likelihood Function
+## ----------------------------------------------------------------
+# Requires the 'MASS' library for mvrnorm, but we use 'mvtnorm' for the density
+# install.packages("mvtnorm")
+library(mvtnorm)
+
+calculate_icm_log_likelihood <- function(data, B, l_scale, eta, kernel_fun) {
+  # data:       A list containing the time points 't' and the data matrix 'y'.
+  # B:          The M x M coregionalization matrix.
+  # l_scale:    The lengthscale for the temporal kernel.
+  # eta:        The vector of per-output noise variances.
+  # kernel_fun: The specific kernel function to use (e.g., squared_exp_kernel).
+
+  # --- 1. Extract dimensions and data ---
+  t <- data$t
+  y <- data$y
+  n_points <- nrow(y)
+  m_out <- ncol(y)
+
+  # --- 2. Build the full covariance matrix K ---
+  # This logic is identical to the data generation step.
+  Kx <- kernel_fun(t, l_scale)
+  K <- kronecker(B, Kx) + diag(rep(eta, each = n_points))
+
+  # --- 3. Vectorize the data matrix y ---
+  # The multivariate normal density function needs a single vector.
+  # We stack the columns of the y matrix (y_1, y_2, ..., y_M).
+  y_vec <- as.vector(y)
+
+  # --- 4. Calculate the log-likelihood ---
+  # We use the dmvnorm function from the 'mvtnorm' package.
+  # 'log = TRUE' makes it compute the log-density directly, which is
+  # more numerically stable than calculating the density and then taking the log.
+  # We add a small amount of "jitter" (1e-6) to the diagonal of K for
+  # numerical stability to ensure the matrix is invertible.
+  log_lik <- dmvnorm(
+    x = y_vec,
+    mean = rep(0, n_points * m_out),
+    sigma = K + diag(1e-6, nrow(K)), # Add jitter for stability
+    log = TRUE
+  )
+  
+  return(log_lik)
+}
+```
+
+```{r}
+# --- Example: Testing the Log-Likelihood ---
+
+# Set a seed for reproducibility
+set.seed(123)
+
+# 1. Define TRUE parameters and generate data
+M <- 2
+B_true <- matrix(c(1.0, 0.6, 0.6, 1.0), M, M)
+l_scale_true <- 0.15
+eta_true <- c(0.1, 0.1)
+
+# Generate a sample dataset using the true parameters
+sample_data <- generate_normal_data_icm(
+  n_points = 64,
+  m_out = M,
+  B = B_true,
+  l_scale = l_scale_true,
+  eta = eta_true
+)
+
+# --- 2. Test different parameter sets ---
+
+# Test Case A: Parameters are the TRUE values (should give a high log-likelihood)
+loglik_A <- calculate_icm_log_likelihood(
+  data = sample_data,
+  B = B_true,
+  l_scale = l_scale_true,
+  eta = eta_true,
+  kernel_fun = squared_exp_kernel
+)
+
+# Test Case B: A wrong lengthscale (less smooth)
+loglik_B <- calculate_icm_log_likelihood(
+  data = sample_data,
+  B = B_true,
+  l_scale = 0.8, # Bad value
+  eta = eta_true,
+  kernel_fun = squared_exp_kernel
+)
+
+# Test Case C: Wrong correlation (assumes independence)
+B_wrong <- diag(M)
+loglik_C <- calculate_icm_log_likelihood(
+  data = sample_data,
+  B = B_wrong, # Bad value
+  l_scale = l_scale_true,
+  eta = eta_true,
+  kernel_fun = squared_exp_kernel
+)
+
+
+cat("Log-Likelihood with TRUE parameters:", loglik_A, "\n")
+cat("Log-Likelihood with WRONG lengthscale:", loglik_B, "\n")
+cat("Log-Likelihood with WRONG correlation:", loglik_C, "\n")
+```
+
+# Wavelet Shrinkage
+
+```{r}
+# install.packages("invgamma")
+library(invgamma)
+
+## ----------------------------------------------------------------
+## Step 4A: Gibbs Sampler for Wavelet Shrinkage
+## ----------------------------------------------------------------
+
+# A more numerically stable version of the wavelet sampler
+update_wavelet_shrinkage_stable <- function(y_cluster, H, prior_params,
+                                            init_params = list(g = 0.1, pi = 0.1, sigma2 = 0.1)) {
+  
+  n_points <- nrow(y_cluster)
+  n_curves <- ncol(y_cluster)
+  d_cluster <- t(H) %*% y_cluster
+  
+  # Use better initial values passed as an argument
+  g <- rep(init_params$g, n_points)
+  pi_val <- rep(init_params$pi, n_points)
+  sigma2 <- init_params$sigma2
+
+  # --- Numerically Stable Gibbs Sampling Steps ---
+  
+  # 1. Update gamma (Inclusion Indicators) in log-space
+  log_lik_slab_per_curve <- dnorm(d_cluster, mean = 0, sd = sqrt(g * sigma2), log = TRUE)
+  log_lik_spike_per_curve <- dnorm(d_cluster, mean = 0, sd = sqrt(1e-6 * sigma2), log = TRUE)
+  
+  # Sum the log-likelihoods across all curves in the cluster
+  log_lik_slab <- rowSums(log_lik_slab_per_curve)
+  log_lik_spike <- rowSums(log_lik_spike_per_curve)
+
+  # Calculate the log odds and convert to probability without direct exp()
+  log_odds <- log(pi_val) + log_lik_slab - (log(1 - pi_val) + log_lik_spike)
+  prob_gamma1 <- 1 / (1 + exp(-log_odds)) # Use the logistic function for stability
+  
+  prob_gamma1[is.nan(prob_gamma1)] <- 0.5 # Handle edge cases
+  
+  gamma <- rbinom(n_points, 1, prob_gamma1)
+  
+  # 2. Update g (Slab Variances)
+  n_included <- sum(gamma) * n_curves
+  sum_sq_included <- sum(d_cluster[gamma == 1,]^2)
+  
+  post_a_g <- prior_params$a_g + n_included / 2
+  post_b_g <- prior_params$b_g + sum_sq_included / (2 * sigma2)
+  g_new <- rinvgamma(1, post_a_g, post_b_g)
+  g <- rep(g_new, n_points)
+  
+  # 3. Update pi (Inclusion Probabilities)
+  post_a_pi <- prior_params$a_pi + sum(gamma)
+  post_b_pi <- prior_params$b_pi + (n_points - sum(gamma))
+  pi_new <- rbeta(1, post_a_pi, post_b_pi)
+  pi_val <- rep(pi_new, n_points)
+
+  return(list(gamma = gamma, g = g, pi = pi_val))
+}
+```
+
+```{r}
+# --- Example: Running the Wavelet Sampler ---
+set.seed(42)
+
+# 1. Generate some data with a sparse anomaly
+normal_base <- generate_normal_data_icm(n_points = 64, m_out = 1)
+anom_data <- apply_shape_anomaly(normal_base)
+# Create a "cluster" with 5 identical curves for this test
+y_test_cluster <- matrix(rep(anom_data$y, 5), nrow = 64, ncol = 5)
+
+# 2. Get the Haar matrix and define priors
+H <- haar_basis_matrix(64)
+priors <- list(a_pi = 1, b_pi = 1, a_g = 2, b_g = 1)
+
+# 3. Run one step of the Gibbs sampler
+updated_wavelet_params <- update_wavelet_shrinkage(y_test_cluster, H, priors)
+
+# 4. Visualize the results
+# 
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+
+# Plot the wavelet coefficients of the anomalous data
+wavelet_coeffs <- t(H) %*% anom_data$y
+plot(wavelet_coeffs, main = "Wavelet Coefficients", xlab = "Coefficient Index", ylab = "Value", pch = 19)
+
+# Plot the inclusion indicators (gamma). Most should be zero!
+plot(updated_wavelet_params$gamma, main = "Inclusion Indicators (gamma)",
+     xlab = "Coefficient Index", ylab = "Included (1) or Excluded (0)", pch = "|", ylim = c(-0.1, 1.1))
+
+cat("Fraction of coefficients included:", mean(updated_wavelet_params$gamma), "\n")
+```
+
+```{r}
+## ----------------------------------------------------------------
+## The Full Gibbs Sampler Loop for Wavelet Shrinkage
+## ----------------------------------------------------------------
+run_wavelet_sampler <- function(y_cluster, H, prior_params, n_iter = 2000, n_burnin = 500) {
+  
+  n_points <- nrow(y_cluster)
+  
+  # --- 1. Initialization ---
+  # Start with conservative initial values that encourage shrinkage
+  params <- list(
+    g = 0.1,
+    pi = 0.1,
+    sigma2 = 0.1 
+  )
+  
+  # --- 2. Storage for Samples ---
+  # We'll store the history of each parameter's value
+  gamma_samples <- matrix(0, nrow = n_iter, ncol = n_points)
+  g_samples <- numeric(n_iter)
+  pi_samples <- numeric(n_iter)
+
+  # --- 3. The MCMC Loop ---
+  cat("Running sampler...\n")
+  for (i in 1:n_iter) {
+    if (i %% 200 == 0) cat("  Iteration", i, "/", n_iter, "\n")
+    
+    # Call our single-step, stable update function
+    updated <- update_wavelet_shrinkage_stable(
+      y_cluster = y_cluster,
+      H = H,
+      prior_params = prior_params,
+      init_params = params # Pass the params from the previous step
+    )
+    
+    # Store the new samples
+    gamma_samples[i, ] <- updated$gamma
+    # We take the first element since g and pi are repeated vectors
+    g_samples[i] <- updated$g[1]
+    pi_samples[i] <- updated$pi[1]
+    
+    # Update the parameters for the next iteration
+    params$g <- updated$g[1]
+    params$pi <- updated$pi[1]
+  }
+  cat("...Done.\n")
+
+  # --- 4. Post-processing ---
+  # Discard the burn-in samples
+  post_burn_indices <- (n_burnin + 1):n_iter
+  gamma_post_burn <- gamma_samples[post_burn_indices, ]
+  
+  # Calculate Posterior Inclusion Probability (PIP)
+  pips <- colMeans(gamma_post_burn)
+  
+  return(list(
+    pips = pips,
+    g_samples = g_samples,
+    pi_samples = pi_samples
+  ))
+}
+
+# --- Test 1: Full Sampler on PURE NOISE ---
+set.seed(1)
+y_noise_cluster <- matrix(rnorm(64 * 5, mean = 0, sd = 0.2), nrow = 64, ncol = 5)
+H <- haar_basis_matrix(64)
+priors <- list(a_pi = 1, b_pi = 1, a_g = 2, b_g = 1)
+
+noise_results <- run_wavelet_sampler(y_noise_cluster, H, priors)
+cat("Average PIP on pure noise data:", mean(noise_results$pips), "\n")
+# EXPECTED: The average PIP should be very close to 0.
+
+# --- Test 2: Full Sampler on SHAPE ANOMALY ---
+set.seed(42)
+normal_base <- generate_normal_data_icm(n_points = 64, m_out = 1)
+anom_data <- apply_shape_anomaly(normal_base)
+y_test_cluster <- matrix(rep(anom_data$y, 5), nrow = 64, ncol = 5)
+
+anomaly_results <- run_wavelet_sampler(y_test_cluster, H, priors)
+cat("Average PIP on anomaly data:", mean(anomaly_results$pips), "\n")
+# EXPECTED: A small, non-zero average PIP, indicating sparse selection.
+```
+
+```{r}
+# 
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+
+# --- Plot 1: PIPs for the Anomaly Case ---
+plot(anomaly_results$pips, main = "Posterior Inclusion Probs (PIPs)\nShape Anomaly",
+     xlab = "Wavelet Coefficient Index", ylab = "PIP", pch = 19)
+# You will see most PIPs are near 0, with a few high-PIP "spikes" where the
+# signal from the anomaly is located. This is perfect shrinkage!
+
+# --- Plot 2: PIPs for the Noise Case ---
+plot(noise_results$pips, main = "PIPs\nPure Noise",
+     xlab = "Wavelet Coefficient Index", ylab = "PIP", pch = 19)
+# Here, all PIPs should be crowded near zero, showing it correctly ignored noise.
+
+# --- Plot 3 & 4: Trace Plots for a Parameter (e.g., pi) ---
+# Trace plots show the parameter's value at each iteration.
+# They should look like "fuzzy caterpillars" after the burn-in period.
+plot(anomaly_results$pi_samples, type = 'l', main = "Trace Plot of pi (Inclusion Prob)",
+     xlab = "Iteration", ylab = "pi")
+abline(v = 500, col = "red", lty = 2) # Mark burn-in
+
+plot(noise_results$pi_samples, type = 'l', main = "Trace Plot of pi (Noise Case)",
+     xlab = "Iteration", ylab = "pi")
+abline(v = 500, col = "red", lty = 2) # Mark burn-in
+```
+
+# ICM Param MH Updates
+
+```{r}
+## ----------------------------------------------------------------
+## Step 4B: Metropolis-Hastings Sampler for ICM Parameters
+## ----------------------------------------------------------------
+
+# This function runs the full MH sampler for the lengthscale 'l_scale'
+run_lscale_sampler <- function(data, kernel_fun, n_iter = 5000, n_burnin = 1000) {
+
+  # --- 1. Initialization ---
+  # Initial values for the MCMC chain
+  params_current <- list(
+    B = diag(ncol(data$y)), # Keep B fixed for now
+    l_scale = 0.5,           # The parameter we are sampling
+    eta = rep(0.1, ncol(data$y)) # Keep eta fixed for now
+  )
+  
+  # Adaptive MH tuning parameters
+  # The proposal 'step_size' will be tuned automatically
+  step_size <- 0.1 
+  target_acceptance_rate <- 0.3
+  
+  # Storage for samples
+  l_scale_samples <- numeric(n_iter)
+  acceptance_history <- numeric(n_iter)
+
+  # --- 2. Calculate initial posterior probability ---
+  # The posterior is proportional to likelihood * prior
+  # We'll use a simple Gamma(2, 1) prior on l_scale
+  log_lik_current <- calculate_icm_log_likelihood(data, params_current$B, params_current$l_scale, params_current$eta, kernel_fun)
+  log_prior_current <- dgamma(params_current$l_scale, shape = 2, rate = 1, log = TRUE)
+  log_posterior_current <- log_lik_current + log_prior_current
+  
+  # --- 3. The MCMC Loop ---
+  cat("Running MH sampler for l_scale...\n")
+  for (i in 1:n_iter) {
+    if (i %% 500 == 0) cat("  Iteration", i, "/", n_iter, "\n")
+    
+    # --- A. Propose a new value ---
+    # We propose from a log-normal distribution to ensure l_scale stays positive.
+    # The 'step_size' controls how far we jump.
+    l_scale_proposed <- rlnorm(1, meanlog = log(params_current$l_scale), sdlog = step_size)
+    
+    # --- B. Calculate acceptance probability 'alpha' ---
+    # If the proposal is invalid (e.g., zero), reject immediately
+    if (is.na(l_scale_proposed) || l_scale_proposed <= 0) {
+      alpha <- -Inf
+    } else {
+      log_lik_proposed <- calculate_icm_log_likelihood(data, params_current$B, l_scale_proposed, params_current$eta, kernel_fun)
+      log_prior_proposed <- dgamma(l_scale_proposed, shape = 2, rate = 1, log = TRUE)
+      log_posterior_proposed <- log_lik_proposed + log_prior_proposed
+      
+      # The acceptance ratio in log-space
+      alpha <- log_posterior_proposed - log_posterior_current
+    }
+
+    # --- C. Accept or Reject ---
+    if (log(runif(1)) < alpha) {
+      # Accept the proposal
+      params_current$l_scale <- l_scale_proposed
+      log_posterior_current <- log_posterior_proposed
+      acceptance_history[i] <- 1
+    } else {
+      # Reject: the current value remains the same
+      acceptance_history[i] <- 0
+    }
+    
+    # --- D. Store the sample ---
+    l_scale_samples[i] <- params_current$l_scale
+    
+    # --- E. Adapt the step size (during burn-in) ---
+    # This automatically tunes the sampler for better efficiency
+    if (i < n_burnin) {
+      # Robbins-Monro adaptation
+      step_size <- step_size + (mean(acceptance_history[1:i]) - target_acceptance_rate) / sqrt(i)
+      step_size <- max(0.01, min(step_size, 1.0)) # Keep step size in a reasonable range
+    }
+  }
+  cat("...Done.\n")
+  
+  # --- 4. Post-processing ---
+  # Discard burn-in and return results
+  post_burn_samples <- l_scale_samples[(n_burnin + 1):n_iter]
+  final_acceptance_rate <- mean(acceptance_history[(n_burnin + 1):n_iter])
+  
+  return(list(
+    samples = post_burn_samples,
+    acceptance_rate = final_acceptance_rate
+  ))
+}
+
+# --- Example: Running the l_scale Sampler ---
+set.seed(42)
+
+# 1. Define TRUE parameters and generate data
+L_SCALE_TRUE <- 0.25 # This is the value we want the sampler to find
+
+true_params <- list(
+  B = diag(1),
+  l_scale = L_SCALE_TRUE,
+  eta = c(0.1),
+  m_out = 1,
+  n_points = 64
+)
+
+sample_data <- generate_normal_data_icm(
+  n_points = true_params$n_points,
+  m_out = true_params$m_out,
+  B = true_params$B,
+  l_scale = true_params$l_scale,
+  eta = true_params$eta
+)
+
+# 2. Run the sampler
+lscale_results <- run_lscale_sampler(sample_data, kernel_fun = squared_exp_kernel)
+
+cat("\nFinal Acceptance Rate:", round(lscale_results$acceptance_rate, 2), "(Target is 0.3)\n")
+cat("Posterior Mean of l_scale:", mean(lscale_results$samples), "(True value is", L_SCALE_TRUE, ")\n")
+
+# 3. Visualize the results
+# 
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+# Plot the trace plot. It should look like a "fuzzy caterpillar"
+plot(lscale_results$samples, type = 'l', main = "Trace Plot of l_scale",
+     xlab = "Iteration (post-burn-in)", ylab = "l_scale value")
+abline(h = L_SCALE_TRUE, col = "red", lwd = 2, lty = 2)
+legend("bottomright", legend = "True Value", col = "red", lty = 2, lwd = 2)
+
+# Plot the posterior density
+plot(density(lscale_results$samples), main = "Posterior Density of l_scale",
+     xlab = "l_scale value", ylab = "Density")
+abline(v = L_SCALE_TRUE, col = "red", lwd = 2, lty = 2)
+```
+
+```{r}
+# install.packages("invgamma")
+library(invgamma) # For the Inverse-Gamma prior
+
+# This function performs one MH update for the entire eta vector
+update_eta_mh <- function(data, params, kernel_fun, step_size) {
+  m_out <- ncol(data$y)
+  eta_current <- params$eta
+  accepted_count <- 0
+  
+  # We update each element of eta one by one
+  for (m in 1:m_out) {
+    # --- Propose ---
+    eta_proposed <- eta_current
+    # Propose from a log-normal to keep it positive
+    eta_proposed[m] <- rlnorm(1, meanlog = log(eta_current[m]), sdlog = step_size)
+
+    # --- Evaluate ---
+    # Prior for variance: Inverse-Gamma(1, 0.1) - weakly informative
+    log_prior_current <- dinvgamma(eta_current[m], 1, 0.1, log = TRUE)
+    log_prior_proposed <- dinvgamma(eta_proposed[m], 1, 0.1, log = TRUE)
+    
+    # Likelihood
+    log_lik_current <- calculate_icm_log_likelihood(data, params$B, params$l_scale, eta_current, kernel_fun)
+    log_lik_proposed <- calculate_icm_log_likelihood(data, params$B, params$l_scale, eta_proposed, kernel_fun)
+    
+    # Acceptance Ratio
+    log_posterior_current <- log_lik_current + log_prior_current
+    log_posterior_proposed <- log_lik_proposed + log_prior_proposed
+    alpha <- log_posterior_proposed - log_posterior_current
+    
+    # --- Accept or Reject ---
+    if (log(runif(1)) < alpha) {
+      eta_current <- eta_proposed
+      accepted_count <- accepted_count + 1
+    }
+  }
+  
+  return(list(eta = eta_current, accepted = (accepted_count > 0)))
+}
+
+# This function performs one MH update for the coregionalization matrix B
+update_b_mh <- function(data, params, kernel_fun, step_size) {
+  B_current <- params$B
+  
+  # --- Propose ---
+  m_out <- ncol(B_current)
+  # 1. Create a symmetric matrix of random noise
+  noise <- matrix(rnorm(m_out * m_out, 0, step_size), m_out, m_out)
+  symmetric_noise <- (noise + t(noise)) / 2 
+  
+  B_proposed <- B_current + symmetric_noise
+  
+  # --- Repair to enforce SPD ---
+  # 2. Eigendecomposition
+  eig <- eigen(B_proposed)
+  # 3. Clip negative eigenvalues
+  eig$values[eig$values < 1e-6] <- 1e-6
+  # 4. Reconstruct the matrix
+  B_proposed <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+  
+  # --- Evaluate ---
+  # A simple prior: encourage smaller off-diagonals and unit diagonals
+  log_prior_current <- sum(dnorm(B_current[upper.tri(B_current)], 0, 1, log = TRUE)) +
+                       sum(dgamma(diag(B_current), 2, 2, log = TRUE))
+  log_prior_proposed <- sum(dnorm(B_proposed[upper.tri(B_proposed)], 0, 1, log = TRUE)) +
+                        sum(dgamma(diag(B_proposed), 2, 2, log = TRUE))
+                        
+  # Likelihood
+  log_lik_current <- calculate_icm_log_likelihood(data, B_current, params$l_scale, params$eta, kernel_fun)
+  log_lik_proposed <- calculate_icm_log_likelihood(data, B_proposed, params$l_scale, params$eta, kernel_fun)
+
+  # Acceptance Ratio
+  log_posterior_current <- log_lik_current + log_prior_current
+  log_posterior_proposed <- log_lik_proposed + log_prior_proposed
+  alpha <- log_posterior_proposed - log_posterior_current
+  
+  # --- Accept or Reject ---
+  accepted <- FALSE
+  if (log(runif(1)) < alpha) {
+    B_current <- B_proposed
+    accepted <- TRUE
+  }
+  
+  return(list(B = B_current, accepted = accepted))
+}
+
+run_full_icm_sampler <- function(data, kernel_fun, n_iter = 10000, n_burnin = 3000) {
+  
+  # --- Initialization ---
+  m_out <- ncol(data$y)
+  params <- list(l_scale = 0.5, eta = rep(0.1, m_out), B = diag(m_out))
+  
+  # --- Adaptive MH Tuning ---
+  # Each parameter gets its own step size and acceptance history
+  step_sizes <- list(l_scale = 0.1, eta = 0.1, B = 0.05)
+  target_rate <- 0.3
+  history <- list(l_scale = c(), eta = c(), B = c())
+
+  # --- Storage ---
+  samples <- list(l_scale = numeric(n_iter), eta = matrix(0, n_iter, m_out), B = array(0, dim=c(m_out, m_out, n_iter)))
+
+  # --- MCMC Loop ---
+  cat("Running full ICM sampler...\n")
+  for (i in 1:n_iter) {
+    if (i %% 1000 == 0) cat("  Iteration", i, "/", n_iter, "\n")
+    
+    # --- Update l_scale (using logic from our previous step) ---
+    l_prop <- rlnorm(1, log(params$l_scale), step_sizes$l_scale)
+    # (Abbreviated MH logic for brevity, but it's identical to the previous step)
+    l_alpha <- (calculate_icm_log_likelihood(data,params$B,l_prop,params$eta,kernel_fun) + dgamma(l_prop,2,1,log=T)) -
+               (calculate_icm_log_likelihood(data,params$B,params$l_scale,params$eta,kernel_fun) + dgamma(params$l_scale,2,1,log=T))
+    if(log(runif(1)) < l_alpha){ params$l_scale <- l_prop; history$l_scale <- c(history$l_scale, 1) } 
+    else { history$l_scale <- c(history$l_scale, 0) }
+
+    # --- Update eta ---
+    eta_update <- update_eta_mh(data, params, kernel_fun, step_sizes$eta)
+    params$eta <- eta_update$eta
+    history$eta <- c(history$eta, eta_update$accepted)
+    
+    # --- Update B ---
+    b_update <- update_b_mh(data, params, kernel_fun, step_sizes$B)
+    params$B <- b_update$B
+    history$B <- c(history$B, b_update$accepted)
+    
+    # --- Adapt step sizes during burn-in ---
+    if (i < n_burnin && i > 50) {
+      for(p_name in names(step_sizes)){
+        rate <- mean(tail(history[[p_name]], 50))
+        step_sizes[[p_name]] <- step_sizes[[p_name]] + (rate - target_rate) / sqrt(i)
+        step_sizes[[p_name]] <- max(0.001, step_sizes[[p_name]])
+      }
+    }
+    
+    # --- Store samples ---
+    samples$l_scale[i] <- params$l_scale
+    samples$eta[i, ] <- params$eta
+    samples$B[, , i] <- params$B
+  }
+  
+  # --- Post-processing ---
+  post_burn <- (n_burnin + 1):n_iter
+  final_samples <- list(
+      l_scale = samples$l_scale[post_burn],
+      eta = samples$eta[post_burn, ],
+      B = samples$B[, , post_burn]
+  )
+  
+  final_rates <- list(
+      l_scale = mean(tail(history$l_scale, n_iter-n_burnin)),
+      eta = mean(tail(history$eta, n_iter-n_burnin)),
+      B = mean(tail(history$B, n_iter-n_burnin))
+  )
+  
+  return(list(samples = final_samples, rates = final_rates))
+}
+## ----------------------------------------------------------------
+## MCMC Diagnostic Plotting Function
+## ----------------------------------------------------------------
+
+plot_mcmc_diagnostics <- function(results, true_params) {
+  
+  # --- Diagnostics for l_scale ---
+  par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+  
+  # 1. Trace Plot
+  plot(results$samples$l_scale, type = 'l', main = "Trace: l_scale", xlab = "Iteration", ylab = "Value")
+  abline(h = true_params$l_scale, col = "red", lty = 2, lwd = 2)
+  
+  # 2. Density Plot
+  plot(density(results$samples$l_scale), main = "Posterior Density: l_scale", xlab = "Value")
+  abline(v = true_params$l_scale, col = "red", lty = 2, lwd = 2)
+  
+  # 3. ACF Plot
+  acf(results$samples$l_scale, main = "ACF: l_scale")
+  
+  # 4. Running Mean Plot
+  running_mean <- cumsum(results$samples$l_scale) / seq_along(results$samples$l_scale)
+  plot(running_mean, type = 'l', main = "Running Mean: l_scale", xlab = "Iteration")
+  abline(h = true_params$l_scale, col = "red", lty = 2, lwd = 2)
+  
+  # --- Diagnostics for eta ---
+  m_out <- ncol(results$samples$eta)
+  for (m in 1:m_out) {
+    par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+    param_name <- paste0("eta[", m, "]")
+    
+    plot(results$samples$eta[, m], type = 'l', main = paste("Trace:", param_name), xlab = "Iteration", ylab = "Value")
+    abline(h = true_params$eta[m], col = "red", lty = 2, lwd = 2)
+    
+    plot(density(results$samples$eta[, m]), main = paste("Posterior Density:", param_name), xlab = "Value")
+    abline(v = true_params$eta[m], col = "red", lty = 2, lwd = 2)
+    
+    acf(results$samples$eta[, m], main = paste("ACF:", param_name))
+    
+    running_mean <- cumsum(results$samples$eta[, m]) / seq_along(results$samples$eta[, m])
+    plot(running_mean, type = 'l', main = paste("Running Mean:", param_name), xlab = "Iteration")
+    abline(h = true_params$eta[m], col = "red", lty = 2, lwd = 2)
+  }
+  
+  # --- Diagnostics for B (off-diagonal element) ---
+  par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+  b_samples <- results$samples$B[1, 2, ]
+  
+  plot(b_samples, type = 'l', main = "Trace: B[1,2]", xlab = "Iteration", ylab = "Value")
+  abline(h = true_params$B[1, 2], col = "red", lty = 2, lwd = 2)
+  
+  plot(density(b_samples), main = "Posterior Density: B[1,2]", xlab = "Value")
+  abline(v = true_params$B[1, 2], col = "red", lty = 2, lwd = 2)
+  
+  acf(b_samples, main = "ACF: B[1,2]")
+  
+  running_mean <- cumsum(b_samples) / seq_along(b_samples)
+  plot(running_mean, type = 'l', main = "Running Mean: B[1,2]", xlab = "Iteration")
+  abline(h = true_params$B[1, 2], col = "red", lty = 2, lwd = 2)
+}
+```
+
+```{r}
+# --- 1. Re-run the Sampler (if you don't have the results in memory) ---
+set.seed(123)
+
+# Define TRUE parameters for a 2-output system
+L_SCALE_TRUE <- 0.2
+ETA_TRUE <- c(0.1, 0.15)
+B_TRUE <- matrix(c(1.0, 0.7, 0.7, 1.2), 2, 2)
+
+# Create a list for easy access
+true_params_list <- list(
+    l_scale = L_SCALE_TRUE,
+    eta = ETA_TRUE,
+    B = B_TRUE
+)
+
+# Generate data
+sample_data_2d <- generate_normal_data_icm(n_points=64, m_out=2, B=B_TRUE, l_scale=L_SCALE_TRUE, eta=ETA_TRUE)
+
+# Run the full sampler
+full_results <- run_full_icm_sampler(sample_data_2d, squared_exp_kernel)
+
+# --- 2. Generate the Diagnostic Plots ---
+# 
+plot_mcmc_diagnostics(full_results, true_params_list)
+```
+
+# Slice Sampling
+
+```{r}
+## ----------------------------------------------------------------
+## Kalli-Walker Slice Sampler for a Dirichlet Process Mixture Model
+## ----------------------------------------------------------------
+
+# We'll use a simple Normal mixture model for this example.
+# Each cluster k will have a mean (mu_k) and variance (sigma2_k = 1).
+
+# Function to calculate the log-likelihood of data y belonging to cluster k
+calculate_log_lik <- function(y, mu_k, sigma2_k = 1) {
+  sum(dnorm(y, mean = mu_k, sd = sqrt(sigma2_k), log = TRUE))
+}
+
+# --- Step 1: Update the slice variables 'u' ---
+update_slices <- function(z, pi_weights) {
+  # z:          Vector of current cluster assignments for each data point.
+  # pi_weights: Vector of current mixture weights for each cluster.
+  n <- length(z)
+  u <- numeric(n)
+  
+  for (i in 1:n) {
+    # The cluster assignment for data point i
+    k <- z[i]
+    # Draw u_i uniformly from (0, pi_k)
+    u[i] <- runif(1, 0, pi_weights[k])
+  }
+  return(u)
+}
+
+# --- Step 2: Update the cluster assignments 'z' ---
+update_assignments <- function(y_data, u, pi_weights, cluster_params, dp_alpha) {
+  # y_data:         List where each element is a data point (or vector).
+  # u:              Vector of current slice variables.
+  # pi_weights:     Current mixture weights.
+  # cluster_params: A list containing parameters for each cluster (e.g., list of mu_k).
+  # dp_alpha:       The concentration parameter of the DP.
+
+  n <- length(y_data)
+  z <- numeric(n)
+  K_current <- length(pi_weights)
+  
+  for (i in 1:n) {
+    # Find all existing clusters "active" for this data point
+    active_clusters_k <- which(pi_weights > u[i])
+    
+    # Calculate log-likelihood for each active cluster
+    log_liks <- sapply(active_clusters_k, function(k) {
+      calculate_log_lik(y_data[[i]], cluster_params$mu[[k]])
+    })
+    
+    # The Kalli-Walker magic: Propose new clusters until one is active
+    # The total probability mass available for new clusters
+    mass_for_new <- max(0, u[i] - sum(pi_weights[pi_weights <= u[i]]))
+    
+    while (TRUE) {
+      # Propose a new cluster from the base measure G_0 (here, N(0, 10))
+      mu_new <- rnorm(1, 0, sqrt(10))
+      
+      # Probability of this new cluster (from the remaining stick)
+      pi_new <- runif(1, 0, mass_for_new)
+      
+      # Is this new cluster active?
+      if (pi_new > u[i]) {
+        # Yes, add it to our list of candidates
+        active_clusters_k <- c(active_clusters_k, K_current + 1)
+        log_lik_new <- calculate_log_lik(y_data[[i]], mu_new)
+        log_liks <- c(log_liks, log_lik_new)
+        
+        # In a full Gibbs sampler, we would add the new params to our state.
+        # For this function, we just consider it for the assignment.
+        break
+      }
+      
+      # If not, subtract its mass and try again
+      mass_for_new <- mass_for_new - pi_new
+      if (mass_for_new <= 0) break # Should rarely happen
+    }
+    
+    # --- Make the assignment ---
+    # Convert log-likelihoods to probabilities (log-sum-exp trick for stability)
+    max_log_lik <- max(log_liks)
+    probs <- exp(log_liks - max_log_lik)
+    probs <- probs / sum(probs)
+    
+    # Sample the new assignment
+    chosen_index <- sample(1:length(active_clusters_k), 1, prob = probs)
+    z[i] <- active_clusters_k[chosen_index]
+  }
+  
+  return(z)
+}
+
+## ----------------------------------------------------------------
+## MCMC Sampler Wrapped in a Reusable Function
+## ----------------------------------------------------------------
+run_dp_sampler_chain <- function(y_list, init_z) {
+  # y_list: The data
+  # init_z: The initial vector of cluster assignments for this chain
+  
+  # --- Initialization ---
+  dp_alpha <- 1.0
+  z <- init_z
+  K_current <- max(z)
+  
+  v <- rbeta(K_current, 1, dp_alpha)
+  if(K_current > 0) v[K_current] <- 1.0
+  
+  if(K_current > 1){ pi_weights <- v * c(1, cumprod(1 - v[-K_current])) } 
+  else { pi_weights <- v }
+  
+  cluster_params <- list(mu = rnorm(K_current, 0, sqrt(10)))
+  
+  n_iter <- 1000
+  
+  # --- Storage for diagnostics ---
+  k_trace <- numeric(n_iter) # To store the number of active clusters
+
+  # --- MCMC Loop ---
+  for (iter in 1:n_iter) {
+    # (The internal sampler code is the same as the previous 'Final Corrected' version)
+    u <- update_slices(z, pi_weights)
+    z <- update_assignments(y_list, u, pi_weights, cluster_params, dp_alpha)
+    K_new <- max(z)
+    if (K_new > K_current) {
+      n_new_clusters <- K_new - K_current
+      v_end <- if(K_current > 0) v[K_current] else numeric(0)
+      v <- c(v[seq_len(K_current-1)], rbeta(n_new_clusters, 1, dp_alpha), v_end)
+      cluster_params$mu <- c(cluster_params$mu, rnorm(n_new_clusters, 0, sqrt(10)))
+      K_current <- K_new
+    }
+    counts <- table(factor(z, levels = 1:K_current))
+    if (K_current > 1) {
+      for (k in 1:(K_current - 1)) {
+        sum_counts_after <- sum(counts[(k + 1):K_current])
+        v[k] <- rbeta(1, 1 + counts[k], dp_alpha + sum_counts_after)
+      }
+    }
+    if(K_current > 0) v[K_current] <- 1.0
+    if (K_current > 1) { pi_weights <- v * c(1, cumprod(1 - v[-K_current])) } 
+    else { pi_weights <- v }
+    
+    for (k in 1:K_current) {
+        data_in_k <- y_full[z == k]; if (length(data_in_k) > 0) {
+        n_k <- length(data_in_k); x_bar <- mean(data_in_k)
+        post_var <- 1/(n_k/1 + 1/10); post_mean <- post_var * (n_k * x_bar/1)
+        cluster_params$mu[k] <- rnorm(1, post_mean, sqrt(post_var))
+        } else { cluster_params$mu[k] <- rnorm(1, 0, sqrt(10)) }
+    }
+    
+    # Store the number of non-empty clusters
+    k_trace[iter] <- length(unique(z))
+  }
+    return(list(k_trace = k_trace, z_final = z)) # Return both trace and final assignments
+
+}
+
+```
+
+```{r}
+# Load necessary libraries
+library(parallel)
+library(foreach)
+library(doParallel)
+library(MASS) # For mvrnorm if needed by any function
+
+# --- Sampler and Helper Functions (include all of them here) ---
+# (Include the full code for `update_slices`, `update_assignments`, and the
+# modified `run_dp_sampler_chain` from above).
+
+# --- Main Parallel Execution Block ---
+
+# 1. Set up the Parallel Backend
+num_cores <- detectCores()
+cl <- makeCluster(num_cores - 1)
+registerDoParallel(cl)
+
+# 2. Prepare the Data and Initializations
+set.seed(42)
+y1 <- rnorm(50,-4,1); y2 <- rnorm(50,0,1); y3 <- rnorm(50,5,1)
+true_z <- rep(1:3, each = 50)
+y_full <- c(y1,y2,y3); y_list <- as.list(y_full); N <- length(y_list)
+
+initializations <- list(
+  chain1 = rep(1, N),
+  chain2 = 1:N,
+  chain3 = sample(1:5, N, replace = TRUE)
+)
+
+# 3. Run the Chains in Parallel
+cat("Starting parallel execution of", length(initializations), "chains...\n")
+start_time <- Sys.time()
+
+all_results <- foreach(
+  init_z = initializations,
+  .packages = c("MASS")
+) %dopar% {
+  # This block is executed on each parallel worker
+  # (Ensure all necessary functions are defined here or exported)
+  run_dp_sampler_chain(y_list, init_z)
+}
+
+end_time <- Sys.time()
+cat("...Parallel execution finished in", round(end_time - start_time, 2), "seconds.\n")
+
+# 4. Important: Stop the Cluster
+stopCluster(cl)
+
+# --- 5. Analyze and Print Final Clustering for Each Chain ---
+# The `all_results` object is now a list of lists.
+for (i in 1:length(all_results)) {
+  chain_result <- all_results[[i]]
+  z_final <- chain_result$z_final
+  
+  # Relabel clusters (e.g., 1,2,3) for consistent comparison
+  z_relabeled <- as.numeric(factor(z_final))
+  
+  cat(paste("\n--- Results for Chain", i, "(started with K=", length(unique(initializations[[i]])), ") ---\n"))
+  cat("Number of clusters found:", length(unique(z_final)), "\n")
+  cat("Confusion Matrix:\n")
+  # Compare the true assignments with the assignments found by the sampler
+  print(table(True = true_z, Found = z_relabeled))
+}
+
+# --- 6. Plot the Diagnostic Traces (as before) ---
+# 
+trace1 <- all_results[[1]]$k_trace
+trace2 <- all_results[[2]]$k_trace
+trace3 <- all_results[[3]]$k_trace
+
+par(mfrow=c(1,1))
+plot(trace1, type = 'l', col = "red", ylim = c(0, max(c(trace1, trace2, trace3))),
+     main = "Trace of Active Clusters (Parallel Chains)",
+     xlab = "MCMC Iteration", ylab = "Number of Clusters")
+lines(trace2, col = "blue")
+lines(trace3, col = "darkgreen")
+abline(h = 3, col = "black", lty = 2, lwd = 2)
+legend("topright", legend = c("Chain 1", "Chain 2", "Chain 3", "True K"),
+       col = c("red", "blue", "darkgreen", "black"), lty = c(1, 1, 1, 2), lwd = 2)
+```
+
+# Carlin-Chib GP Covaraince Kernel Switch
+
+```{r}
+## ----------------------------------------------------------------
+## Step 5: Carlin-Chib Sampler for GP Kernel Selection
+## ----------------------------------------------------------------
+
+# --- 1. Define the collection of kernels and their parameters ---
+# This configuration list makes the sampler modular and easy to extend.
+## ----------------------------------------------------------------
+## Expanded Kernel Configuration
+## ----------------------------------------------------------------
+
+# This list now defines all six kernels for the Carlin-Chib sampler.
+kernel_config_full <- list(
+  # Model 1: Squared Exponential (RBF)
+  list(
+    name = "SquaredExp",
+    kernel_fun = squared_exp_kernel,
+    params = list(l_scale = 0.2),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  ),
+  # Model 2: Matérn 3/2
+  list(
+    name = "Matern32",
+    kernel_fun = matern32_kernel,
+    params = list(l_scale = 0.2),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  ),
+  # Model 3: Matérn 5/2 (NEW)
+  list(
+    name = "Matern52",
+    kernel_fun = matern52_kernel,
+    params = list(l_scale = 0.2),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  ),
+  # Model 4: Rational Quadratic
+  list(
+    name = "RationalQuad",
+    kernel_fun = rational_quad_kernel,
+    params = list(l_scale = 0.2, alpha_rq = 1.0),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      ),
+      alpha_rq = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 1, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 1),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  ),
+  # Model 5: Periodic (NEW)
+  list(
+    name = "Periodic",
+    kernel_fun = periodic_kernel,
+    params = list(l_scale = 0.5, period = 0.25),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 3, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 3, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      ),
+      period = list(
+        # A LogNormal prior centered around 0.25 is good for data on [0,1]
+        prior_log_pdf = function(val) dlnorm(val, log(0.25), 0.5, log = TRUE),
+        pseudoprior_sampler = function() rlnorm(1, log(0.25), 0.5),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  ),
+  # Model 6: Exponential (Ornstein-Uhlenbeck) (NEW)
+  list(
+    name = "Exponential",
+    kernel_fun = exponential_kernel,
+    params = list(l_scale = 0.2),
+    param_updates = list(
+      l_scale = list(
+        prior_log_pdf = function(val) dgamma(val, 2, 2, log = TRUE),
+        pseudoprior_sampler = function() rgamma(1, 2, 2),
+        proposal_sampler = function(curr, step) rlnorm(1, log(curr), step)
+      )
+    )
+  )
+)
+
+# Helper function to compute the log-posterior for a given model and its params
+calculate_log_posterior <- function(model_config, params, data) {
+    
+  # Combine kernel-specific params with shared params
+  args_for_lik <- c(list(data = data), params)
+  
+  # Add the kernel function itself to the arguments
+  args_for_lik$kernel_fun <- model_config$kernel_fun
+
+  # Calculate log-likelihood
+  log_lik <- do.call(calculate_icm_log_likelihood, args_for_lik)
+  if (!is.finite(log_lik)) return(-Inf)
+
+  # Calculate log-prior for kernel parameters
+  log_prior <- 0
+  for (p_name in names(model_config$params)) {
+    prior_fun <- model_config$param_updates[[p_name]]$prior_log_pdf
+    log_prior <- log_prior + prior_fun(params[[p_name]])
+  }
+  
+  return(log_lik + log_prior)
+}
+
+
+# A more complete version of the sampler
+run_kernel_switching_sampler_v2 <- function(data, config, n_iter = 10000, n_burnin = 3000) {
+  
+  m_out <- ncol(data$y); n_models <- length(config)
+  
+  # --- State Initialization ---
+  state <- list(
+    active_model_idx = 1,
+    kernel_params = lapply(config, `[[`, "params"),
+    eta = rep(0.1, m_out), B = diag(m_out)
+  )
+  
+  step_sizes <- lapply(state$kernel_params, function(p_list) lapply(p_list, function(p) 0.1))
+  
+  # --- Storage ---
+  samples <- list(model_idx = integer(n_iter))
+
+  cat("Running Carlin-Chib sampler with all kernels...\n")
+  for (i in 1:n_iter) {
+    if (i %% 1000 == 0) cat("  Iteration", i, "/", n_iter, "\n")
+    
+    # --- Step I: Update Model Index ---
+    log_post_scores <- sapply(1:n_models, function(k) {
+        full_params <- c(state$kernel_params[[k]], list(B=state$B, eta=state$eta))
+        calculate_log_posterior(config[[k]], full_params, data)
+    })
+    
+    max_score <- max(log_post_scores)
+    probs <- exp(log_post_scores - max_score)
+    probs <- probs / sum(probs)
+    state$active_model_idx <- sample(1:n_models, 1, prob = probs)
+    
+    # --- Step II: Update Parameters ---
+    active_idx <- state$active_model_idx
+    
+    # A. Update ACTIVE kernel parameters
+    for (p_name in names(config[[active_idx]]$params)) {
+        current_val <- state$kernel_params[[active_idx]][[p_name]]
+        proposal_fun <- config[[active_idx]]$param_updates[[p_name]]$proposal_sampler
+        proposed_val <- proposal_fun(current_val, step_sizes[[active_idx]][[p_name]])
+
+        if(proposed_val > 0) {
+            params_current <- c(state$kernel_params[[active_idx]], list(B=state$B, eta=state$eta))
+            log_post_current <- calculate_log_posterior(config[[active_idx]], params_current, data)
+
+            params_proposed <- params_current
+            params_proposed[[p_name]] <- proposed_val
+            log_post_proposed <- calculate_log_posterior(config[[active_idx]], params_proposed, data)
+
+            if (log(runif(1)) < log_post_proposed - log_post_current) {
+                state$kernel_params[[active_idx]][[p_name]] <- proposed_val
+            }
+        }
+    }
+    
+    # B. Update INACTIVE kernel parameters
+    for (k in 1:n_models) {
+      if (k != active_idx) {
+        for (p_name in names(config[[k]]$params)) {
+          sampler_fun <- config[[k]]$param_updates[[p_name]]$pseudoprior_sampler
+          state$kernel_params[[k]][[p_name]] <- sampler_fun()
+        }
+      }
+    }
+    
+    # C. Update SHARED parameters (eta and B)
+    # (These would be updated here using their respective MH steps)
+
+    samples$model_idx[i] <- state$active_model_idx
+  }
+  
+  post_burn <- (n_burnin + 1):n_iter
+  return(list(model_idx_samples = samples$model_idx[post_burn]))
+}
+
+```
+
+```{r}
+# -----------------------------------------------------------------
+# Section 1: Load Libraries & Define All Helper Functions
+# -----------------------------------------------------------------
+# install.packages("mvtnorm")
+library(mvtnorm)
+
+# --- Kernel Functions ---
+squared_exp_kernel <- function(t, l_scale) { as.matrix(dist(t))^2 -> d2; exp(-0.5 * d2 / l_scale^2) }
+matern32_kernel <- function(t, l_scale) { as.matrix(dist(t)) -> d; r <- d/l_scale; term <- sqrt(3)*r; (1+term)*exp(-term) }
+matern52_kernel <- function(t, l_scale) { as.matrix(dist(t)) -> d; r <- d/l_scale; t1 <- sqrt(5)*r; t2 <- 5*r^2/3; (1+t1+t2)*exp(-t1) }
+rational_quad_kernel <- function(t, l_scale, alpha_rq) { as.matrix(dist(t))^2 -> d2; (1 + d2/(2*alpha_rq*l_scale^2))^-alpha_rq }
+periodic_kernel <- function(t, l_scale, period) { as.matrix(dist(t)) -> d; exp(-2*sin(pi*d/period)^2 / l_scale^2) }
+exponential_kernel <- function(t, l_scale) { as.matrix(dist(t)) -> d; exp(-d/l_scale) }
+
+# --- ICM Log-Likelihood Function ---
+calculate_icm_log_likelihood <- function(data, B, l_scale, eta, kernel_fun, ...) {
+  t <- data$t; y <- data$y
+  n_points <- nrow(y); m_out <- ncol(y)
+  
+  # The '...' allows extra params like alpha_rq or period to be passed
+  Kx <- kernel_fun(t, l_scale, ...) 
+  K <- kronecker(B, Kx) + diag(rep(eta, each = n_points))
+  y_vec <- as.vector(y)
+  
+  dmvnorm(y_vec, mean = rep(0, n_points * m_out), sigma = K + diag(1e-6, nrow(K)), log = TRUE)
+}
+
+# --- Expanded Kernel Configuration ---
+kernel_config_full <- list(
+  list(name="SquaredExp", kernel_fun=squared_exp_kernel, params=list(l_scale=0.2), param_updates=list(l_scale=list(prior=function(v)dgamma(v,2,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,2)))),
+  list(name="Matern32", kernel_fun=matern32_kernel, params=list(l_scale=0.2), param_updates=list(l_scale=list(prior=function(v)dgamma(v,2,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,2)))),
+  list(name="Matern52", kernel_fun=matern52_kernel, params=list(l_scale=0.2), param_updates=list(l_scale=list(prior=function(v)dgamma(v,2,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,2)))),
+  list(name="RationalQuad", kernel_fun=rational_quad_kernel, params=list(l_scale=0.2, alpha_rq=1.0), param_updates=list(l_scale=list(prior=function(v)dgamma(v,2,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,2)), alpha_rq=list(prior=function(v)dgamma(v,2,1,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,1)))),
+  list(name="Periodic", kernel_fun=periodic_kernel, params=list(l_scale=0.5, period=0.25), param_updates=list(l_scale=list(prior=function(v)dgamma(v,3,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,3,2)), period=list(prior=function(v)dlnorm(v,log(0.25),0.5,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rlnorm(1,log(0.25),0.5)))),
+  list(name="Exponential", kernel_fun=exponential_kernel, params=list(l_scale=0.2), param_updates=list(l_scale=list(prior=function(v)dgamma(v,2,2,log=T),prop=function(c,s)rlnorm(1,log(c),s),pseudo=function()rgamma(1,2,2))))
+)
+
+# --- The Main MCMC Sampler Function ---
+run_kernel_sampler <- function(data, config, n_iter, n_burnin) {
+  state <- list(active_model_idx=1, kernel_params=lapply(config, `[[`, "params"), eta=rep(0.1, ncol(data$y)), B=diag(ncol(data$y)))
+  samples <- list(model_idx = integer(n_iter))
+  
+  cat("Starting MCMC run...\n")
+  pb <- txtProgressBar(min=0, max=n_iter, style=3)
+  for (i in 1:n_iter) {
+    # 1. Update Model Index (Carlin-Chib)
+    log_post_scores <- sapply(1:length(config), function(k) {
+      log_lik_args <- c(list(data=data), state$kernel_params[[k]], list(B=state$B, eta=state$eta), list(kernel_fun=config[[k]]$kernel_fun))
+      log_lik <- do.call(calculate_icm_log_likelihood, log_lik_args)
+      log_prior <- sum(sapply(names(config[[k]]$params), function(p) config[[k]]$param_updates[[p]]$prior(state$kernel_params[[k]][[p]])))
+      log_lik + log_prior
+    })
+    probs <- exp(log_post_scores - max(log_post_scores)); probs <- probs/sum(probs)
+    state$active_model_idx <- sample(1:length(config), 1, prob = probs)
+    
+    # 2. Update Parameters
+    active_idx <- state$active_model_idx
+    # A. Active kernel params
+    for (p_name in names(config[[active_idx]]$params)) {
+      current_val <- state$kernel_params[[active_idx]][[p_name]]
+      proposed_val <- config[[active_idx]]$param_updates[[p_name]]$prop(current_val, 0.1)
+      if(proposed_val > 0) {
+        p_current_args <- c(list(data=data), state$kernel_params[[active_idx]], list(B=state$B, eta=state$eta), list(kernel_fun=config[[active_idx]]$kernel_fun))
+        p_proposed_args <- p_current_args; p_proposed_args[[p_name]] <- proposed_val
+        log_post_current <- do.call(calculate_icm_log_likelihood, p_current_args) + config[[active_idx]]$param_updates[[p_name]]$prior(current_val)
+        log_post_proposed <- do.call(calculate_icm_log_likelihood, p_proposed_args) + config[[active_idx]]$param_updates[[p_name]]$prior(proposed_val)
+        if(log(runif(1)) < log_post_proposed - log_post_current) state$kernel_params[[active_idx]][[p_name]] <- proposed_val
+      }
+    }
+    # B. Inactive kernel params
+    for (k in (1:length(config))[-active_idx]) for (p_name in names(config[[k]]$params)) state$kernel_params[[k]][[p_name]] <- config[[k]]$param_updates[[p_name]]$pseudo()
+    
+    samples$model_idx[i] <- state$active_model_idx
+    setTxtProgressBar(pb, i)
+  }
+  close(pb)
+  cat("...Run complete.\n")
+  return(samples$model_idx[(n_burnin + 1):n_iter])
+}
+
+# -----------------------------------------------------------------
+# Section 2: Execute the Test Run
+# -----------------------------------------------------------------
+set.seed(123) # For reproducibility
+
+# --- A. Generate Test Data from the Exponential Kernel (Model #6) ---
+cat("Generating test data from the 'Exponential' kernel...\n")
+n_pts <- 64
+time_pts <- seq(0, 1, length.out = n_pts)
+true_l_scale <- 0.1
+true_eta <- 0.05
+K_exp <- exponential_kernel(time_pts, l_scale = true_l_scale)
+K_full <- K_exp + diag(true_eta, n_pts)
+y_exp <- mvrnorm(1, mu = rep(0, n_pts), Sigma = K_full)
+test_data <- list(t = time_pts, y = matrix(y_exp, ncol = 1))
+
+# Plot the generated data to see its characteristic "roughness"
+plot(test_data$t, test_data$y, type='l', main="Test Data (from Exponential Kernel)", xlab="Time", ylab="Value")
+
+# --- B. Run the MCMC Sampler ---
+# A short run: 3000 total iterations, with 1000 for burn-in.
+mcmc_results <- run_kernel_sampler(
+  data = test_data, 
+  config = kernel_config_full, 
+  n_iter = 3000, 
+  n_burnin = 1000
+)
+
+# --- C. Analyze and Visualize the Results ---
+model_names <- sapply(kernel_config_full, `[[`, "name")
+posterior_counts <- table(factor(mcmc_results, levels = 1:6))
+posterior_probs <- posterior_counts / length(mcmc_results)
+
+# Set up plot area
+par(mfrow = c(1, 1), mar = c(5, 8, 4, 2))
+
+# 1. Bar Plot of Posterior Probabilities
+barplot(posterior_probs, names.arg = model_names, las = 2, horiz = TRUE,
+        main = "Posterior Probability of Each Kernel",
+        xlab = "Probability", col = "skyblue3")
+abline(v = seq(0, 1, 0.1), col = "grey", lty = 3) # Add gridlines
+
+# 2. Trace Plot of the Active Kernel Index
+plot(mcmc_results, type = 'l',
+     main = "Trace Plot of Active Kernel Index",
+     xlab = "MCMC Iteration (Post-Burn-in)", ylab = "Kernel",
+     yaxt = "n")
+axis(2, at = 1:length(model_names), labels = model_names, las = 1)
+```
+
+# Full ICM Model
+
+```{r}
+################################################################################
+##
+## PART 1: SETUP - LIBRARIES, KERNELS, AND HELPERS
+##
+################################################################################
+
+# --- Load Libraries ---
+library(MASS); library(mvtnorm); library(invgamma)
+
+# --- Kernel Functions (All Six) ---
+squared_exp_kernel <- function(t, l_scale, ...) { as.matrix(dist(t))^2 -> d2; exp(-0.5 * d2 / l_scale^2) }
+matern32_kernel <- function(t, l_scale, ...) { d <- as.matrix(dist(t)); r <- d/l_scale; term <- sqrt(3)*r; (1+term)*exp(-term) }
+matern52_kernel <- function(t, l_scale, ...) { d <- as.matrix(dist(t)); r <- d/l_scale; t1<-sqrt(5)*r; t2<-5*r^2/3; (1+t1+t2)*exp(-t1) }
+exponential_kernel <- function(t, l_scale, ...) { as.matrix(dist(t)) -> d; exp(-d/l_scale) }
+rational_quad_kernel <- function(t, l_scale, alpha_rq, ...) { d2 <- as.matrix(dist(t))^2; (1 + d2/(2*alpha_rq*l_scale^2))^-alpha_rq }
+periodic_kernel <- function(t, l_scale, period, ...) { d <- as.matrix(dist(t)); exp(-2*sin(pi*d/period)^2/l_scale^2) }
+
+# --- Haar Wavelet & Data Generation ---
+haar_basis_matrix <- function(n) { if (log2(n)%%1!=0) stop("n must be a power of 2."); H<-diag(n); k<-n; while (k>1) {k<-k/2; H_new<-matrix(0,n,n); for (i in 1:k) {H_new[,i]<-(H[,2*i-1]+H[,2*i])/sqrt(2); H_new[,i+k]<-(H[,2*i-1]-H[,2*i])/sqrt(2)}; if(2*k<n) H_new[,(2*k+1):n]<-H[,(2*k+1):n]; H<-H_new}; return(H) }
+generate_normal_data_icm <- function(n_points=64, m_out=3, B=diag(3), eta=rep(0.05,3), kernel_fun=squared_exp_kernel, kernel_params=list(l_scale=0.1)) { t<-seq(0,1,length.out=n_points); Kx<-do.call(kernel_fun, c(list(t=t), kernel_params)); K<-kronecker(B,Kx)+diag(rep(eta,each=n_points)); y_vec<-mvrnorm(1,mu=rep(0,n_points*m_out),Sigma=K+diag(1e-6,nrow(K))); y_mat<-matrix(y_vec,nrow=n_points,ncol=m_out,byrow=FALSE); return(list(t=t,y=y_mat)) }
+
+# --- FULL Kernel Configuration List ---
+kernel_config_full <- list(
+  list(name="SquaredExp", fun=squared_exp_kernel, params=c("l_scale"), priors=list(l_scale=function(v)dgamma(v,2,2,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s)), psd_s=list(l_scale=function()rgamma(1,2,2))),
+  list(name="Matern32", fun=matern32_kernel, params=c("l_scale"), priors=list(l_scale=function(v)dgamma(v,2,2,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s)), psd_s=list(l_scale=function()rgamma(1,2,2))),
+  list(name="Matern52", fun=matern52_kernel, params=c("l_scale"), priors=list(l_scale=function(v)dgamma(v,2,2,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s)), psd_s=list(l_scale=function()rgamma(1,2,2))),
+  list(name="Exponential", fun=exponential_kernel, params=c("l_scale"), priors=list(l_scale=function(v)dgamma(v,2,2,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s)), psd_s=list(l_scale=function()rgamma(1,2,2))),
+  list(name="RationalQuad", fun=rational_quad_kernel, params=c("l_scale","alpha_rq"), priors=list(l_scale=function(v)dgamma(v,2,2,log=T), alpha_rq=function(v)dgamma(v,2,1,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s), alpha_rq=function(c,s)rlnorm(1,log(c),s)), psd_s=list(l_scale=function()rgamma(1,2,2), alpha_rq=function()rgamma(1,2,1))),
+  list(name="Periodic", fun=periodic_kernel, params=c("l_scale","period"), priors=list(l_scale=function(v)dgamma(v,3,2,log=T), period=function(v)dbeta(v,5,5,log=T)), proposals=list(l_scale=function(c,s)rlnorm(1,log(c),s), period=function(c,s)rbeta(1, c*s, (1-c)*s)), psd_s=list(l_scale=function()rgamma(1,3,2), period=function()rbeta(1,5,5)))
+)
+
+################################################################################
+##
+## PART 2: MCMC COMPONENTS (Unchanged, fully implemented)
+##
+################################################################################
+calculate_mv_loglik <- function(y_mat, t, B, eta, kernel_fun, kernel_params) { if(anyNA(y_mat)||!is.finite(sum(y_mat)))return(-Inf); Kx<-do.call(kernel_fun,c(list(t=t),kernel_params)); K<-kronecker(B,Kx)+diag(rep(eta,each=nrow(y_mat))); y_vec<-as.vector(y_mat); dmvnorm(y_vec,mean=rep(0,length(y_vec)),sigma=K+diag(1e-6,nrow(K)),log=TRUE) }
+update_wavelet_params <- function(y_list_cluster, H, wavelet_priors, current_wavelet_params) { m_out<-ncol(y_list_cluster[[1]]); lapply(1:m_out,function(ch){y_ch_mat<-do.call(cbind,lapply(y_list_cluster,function(c)c[,ch]));d_cl<-t(H)%*%y_ch_mat;n_pts<-nrow(d_cl);n_crv<-ncol(d_cl);g<-current_wavelet_params[[ch]]$g;pi_val<-current_wavelet_params[[ch]]$pi;sigma2<-1.0;log_lik_slab<-rowSums(dnorm(d_cl,0,sqrt(g*sigma2),log=T));log_lik_spike<-rowSums(dnorm(d_cl,0,sqrt(1e-6*sigma2),log=T));prob_gamma1<-1/(1+exp(-(log(pi_val)+log_lik_slab-(log(1-pi_val)+log_lik_spike))));prob_gamma1[is.nan(prob_gamma1)]<-0.5;gamma<-rbinom(n_pts,1,prob_gamma1);post_a_g<-wavelet_priors$a_g+sum(gamma)*n_crv/2;post_b_g<-wavelet_priors$b_g+sum(d_cl[gamma==1,]^2)/(2*sigma2);g<-rinvgamma(1,post_a_g,post_b_g);post_a_pi<-wavelet_priors$a_pi+sum(gamma);post_b_pi<-wavelet_priors$b_pi+(n_pts-sum(gamma));pi_val<-rbeta(1,post_a_pi,post_b_pi);return(list(gamma=gamma,g=g,pi=pi_val))}) }
+reconstruct_normal_component <- function(y_mat, H, wavelet_params) { y_norm<-y_mat*0; for(ch in 1:ncol(y_mat)){d_ch<-t(H)%*%y_mat[,ch];d_ch[wavelet_params[[ch]]$gamma==0]<-0;y_norm[,ch]<-H%*%d_ch}; return(y_norm) }
+update_kernel_choice <- function(y_list_normal, t, current_params, config) { log_post_scores<-sapply(1:length(config),function(k){kernel_params<-current_params$kernel_params[[k]];log_lik<-sum(sapply(y_list_normal,function(y)calculate_mv_loglik(y,t,current_params$B,current_params$eta,config[[k]]$fun,kernel_params)));log_prior<-sum(mapply(function(fun,val)fun(val),config[[k]]$priors,kernel_params));return(log_lik+log_prior)}); probs<-exp(log_post_scores-max(log_post_scores));probs<-probs/sum(probs);current_params$active_kernel_idx<-sample(1:length(config),1,prob=probs);return(current_params) }
+update_icm_params <- function(y_list_normal, t, current_params, config) { params<-current_params; calc_log_post<-function(p){active_k_idx<-p$active_kernel_idx;kernel_params<-p$kernel_params[[active_k_idx]];log_lik<-sum(sapply(y_list_normal,function(y)calculate_mv_loglik(y,t,p$B,p$eta,config[[active_k_idx]]$fun,kernel_params)));log_prior_kern<-sum(mapply(function(fun,val)fun(val),config[[active_k_idx]]$priors,kernel_params));log_prior_B<-sum(dnorm(p$B[upper.tri(p$B)],0,1,log=T))+sum(dgamma(diag(p$B),2,2,log=T));log_prior_eta<-sum(dinvgamma(p$eta,2,0.1,log=T));return(log_lik+log_prior_kern+log_prior_B+log_prior_eta)}; for(p_name in config[[params$active_kernel_idx]]$params){current_log_post<-calc_log_post(params);prop_params<-params;proposal_fun<-config[[params$active_kernel_idx]]$proposals[[p_name]];current_val<-prop_params$kernel_params[[params$active_kernel_idx]][[p_name]];prop_params$kernel_params[[params$active_kernel_idx]][[p_name]]<-proposal_fun(current_val,10);prop_log_post<-calc_log_post(prop_params);if(log(runif(1))<(prop_log_post-current_log_post)){params<-prop_params}}; for(k_idx in 1:length(config)){if(k_idx!=params$active_kernel_idx){params$kernel_params[[k_idx]]<-sapply(config[[k_idx]]$psd_s,function(f)f(),simplify=FALSE)}}; return(params) }
+update_dp_alpha <- function(current_alpha, N, K, prior_shape=1, prior_rate=1) { eta_aux<-rbeta(1,current_alpha+1,N); pi_mix<-(prior_shape+K-1)/(N*(prior_rate-log(eta_aux))+prior_shape+K-1); if(runif(1)<pi_mix){rgamma(1,prior_shape+K,prior_rate-log(eta_aux))}else{rgamma(1,prior_shape+K-1,prior_rate-log(eta_aux))} }
+
+
+################################################################################
+##
+## PART 3: THE MASTER GIBBS SAMPLER WITH THINNING
+##
+################################################################################
+run_full_mv_model <- function(all_curves_list, t, config, n_iter, n_burnin, thin = 1) {
+    # --- Initialization ---
+    N <- length(all_curves_list); m_out <- ncol(all_curves_list[[1]]); n_pts <- nrow(all_curves_list[[1]])
+    H <- haar_basis_matrix(n_pts); dp_alpha <- 1.0; z <- rep(1, N); K <- 1; v <- c(1.0); pi_weights <- c(1.0)
+    wavelet_priors <- list(a_g=2, b_g=1, a_pi=1, b_pi=1)
+
+    draw_new_cluster_params <- function() {
+        active_idx <- sample(1:length(config),1)
+        k_params <- lapply(1:length(config), function(k_idx) sapply(config[[k_idx]]$psd_s, function(f) f(), simplify=FALSE))
+        list(wavelet_params=replicate(m_out,list(gamma=rbinom(n_pts,1,0.1),g=rgamma(1,2,1),pi=rbeta(1,1,5)),simplify=F),
+             icm_params=list(active_kernel_idx=active_idx, kernel_params=k_params, eta=rinvgamma(m_out,2,0.1), B=diag(m_out)))
+    }
+    cluster_params <- list(draw_new_cluster_params())
+    
+    # --- Storage with Thinning ---
+    n_samples_to_store <- floor((n_iter - n_burnin) / thin)
+    z_samples <- matrix(0, nrow=n_samples_to_store, ncol=N); k_samples <- integer(n_samples_to_store); alpha_samples <- numeric(n_samples_to_store)
+    params_samples <- vector("list", n_samples_to_store) # Store full params for diagnostics
+    s_idx <- 0 # Counter for stored samples
+
+    cat("Starting full MCMC run...\n"); pb <- txtProgressBar(min=0, max=n_iter, style=3)
+    
+    # --- Main Loop ---
+    for (iter in 1:n_iter) {
+        # ... (DP steps 1, 2, 3 are unchanged) ...
+        u <- sapply(1:N, function(i) if(z[i] <= length(pi_weights)) runif(1,0,pi_weights[z[i]]) else runif(1,0,1e-9))
+        for (i in 1:N) {
+            active_clusters <- which(pi_weights > u[i]); if(length(active_clusters)==0) active_clusters <- 1
+            log_liks <- sapply(active_clusters, function(k) {y_norm<-reconstruct_normal_component(all_curves_list[[i]],H,cluster_params[[k]]$wavelet_params);icm_p<-cluster_params[[k]]$icm_params;active_k<-icm_p$active_kernel_idx;calculate_mv_loglik(y_norm,t,icm_p$B,icm_p$eta,config[[active_k]]$fun,icm_p$kernel_params[[active_k]])})
+            remaining_mass <- max(0, u[i] - sum(pi_weights[-active_clusters], na.rm=T))
+            while(TRUE) {if(remaining_mass<=1e-9)break;pi_new_prop<-runif(1,0,remaining_mass);if(pi_new_prop>u[i]){K_new<-K+1;new_params<-draw_new_cluster_params();y_norm<-reconstruct_normal_component(all_curves_list[[i]],H,new_params$wavelet_params);active_k<-new_params$icm_params$active_kernel_idx;log_lik_new<-calculate_mv_loglik(y_norm,t,new_params$icm_params$B,new_params$icm_params$eta,config[[active_k]]$fun,new_params$icm_params$kernel_params[[active_k]]);active_clusters<-c(active_clusters,K_new);log_liks<-c(log_liks,log_lik_new);break};remaining_mass<-remaining_mass-pi_new_prop}
+            probs <- exp(log_liks - max(log_liks, na.rm=T)); probs[is.na(probs)]<-0; probs<-probs/sum(probs,na.rm=T); chosen_idx<-sample(1:length(active_clusters),1,prob=probs); z[i]<-active_clusters[chosen_idx]; if(z[i]>K){cluster_params[[z[i]]]<-new_params;K<-z[i]}
+        }
+        counts <- table(factor(z,levels=1:K)); if(length(counts)<K)counts<-table(factor(z,levels=1:K)); v<-rbeta(K,1+counts,dp_alpha+N-cumsum(counts)); v[K]<-1; pi_weights<-v*c(1,cumprod(1-v[-K]))
+
+        # 4. Update Cluster-Specific Parameters
+        for (k in 1:K) {
+            idx <- which(z == k); if(length(idx) == 0) { cluster_params[[k]] <- draw_new_cluster_params(); next }
+            Y_k_list <- all_curves_list[idx]
+            params_k <- cluster_params[[k]]
+            params_k$wavelet_params <- update_wavelet_params(Y_k_list, H, wavelet_priors, params_k$wavelet_params)
+            Y_k_normal_list <- lapply(Y_k_list, function(y) reconstruct_normal_component(y, H, params_k$wavelet_params))
+            params_k$icm_params <- update_kernel_choice(Y_k_normal_list, t, params_k$icm_params, config)
+            params_k$icm_params <- update_icm_params(Y_k_normal_list, t, params_k$icm_params, config)
+            cluster_params[[k]] <- params_k
+        }
+        
+        # 5. Update DP concentration parameter alpha
+        dp_alpha <- update_dp_alpha(dp_alpha, N, K)
+        
+        # 6. Store Samples according to thinning interval
+        if(iter > n_burnin && (iter - n_burnin) %% thin == 0) {
+            s_idx <- s_idx + 1
+            z_samples[s_idx,] <- z
+            k_samples[s_idx] <- length(unique(z))
+            alpha_samples[s_idx] <- dp_alpha
+            params_samples[[s_idx]] <- cluster_params
+        }
+        setTxtProgressBar(pb, iter)
+    }
+    close(pb)
+    return(list(z=z_samples, k=k_samples, alpha=alpha_samples, params=params_samples))
+}
+
+################################################################################
+##
+## PART 4: NEW MCMC DIAGNOSTIC PLOTTING FUNCTION
+##
+################################################################################
+plot_mcmc_diagnostics <- function(results, config) {
+    par(mfrow=c(3,2), mar=c(4,4,3,1))
+    
+    # 1. Trace of K (Number of Clusters)
+    plot(results$k, type='s', main="Trace of K (Number of Clusters)", ylab="K", xlab="Stored Sample Index")
+    
+    # 2. Density of K
+    if (length(unique(results$k)) > 1) {
+      plot(density(results$k), main="Density of K", xlab="K")
+    } else {
+      hist(results$k, main="Density of K", xlab="K", breaks=(min(results$k)-0.5):(max(results$k)+0.5))
+    }
+    
+    # 3. Trace of alpha
+    plot(results$alpha, type='l', main="Trace of alpha (DP Concentration)", ylab="alpha", xlab="Stored Sample Index")
+    
+    # 4. Density of alpha
+    plot(density(results$alpha), main="Density of alpha", xlab="alpha")
+    
+    # 5. Trace of l_scale for the largest cluster
+    # This logic handles label switching by tracking the largest cluster at each step
+    l_scale_largest_cluster <- sapply(1:length(results$params), function(i) {
+        z_iter <- results$z[i,]
+        counts <- table(z_iter)
+        if(length(counts) == 0) return(NA)
+        largest_cluster_label <- as.numeric(names(which.max(counts)))
+        active_kernel <- results$params[[i]][[largest_cluster_label]]$icm_params$active_kernel_idx
+        return(results$params[[i]][[largest_cluster_label]]$icm_params$kernel_params[[active_kernel]]$l_scale)
+    })
+    plot(l_scale_largest_cluster, type='l', main="Trace of l_scale (Largest Cluster)", ylab="l_scale")
+    
+    # 6. Trace of B[1,2] for the largest cluster
+    B12_largest_cluster <- sapply(1:length(results$params), function(i) {
+        z_iter <- results$z[i,]
+        counts <- table(z_iter)
+        if(length(counts) == 0) return(NA)
+        largest_cluster_label <- as.numeric(names(which.max(counts)))
+        return(results$params[[i]][[largest_cluster_label]]$icm_params$B[1,2])
+    })
+    plot(B12_largest_cluster, type='l', main="Trace of B[1,2] (Largest Cluster)", ylab="B[1,2]")
+}
+```
+
+```{r}
+################################################################################
+##
+## PART 5: COMPREHENSIVE SCENARIO EXECUTION FRAMEWORK
+##
+################################################################################
+
+run_and_visualize_scenario <- function(anomaly_function, scenario_title, n_normal=6, n_anomalous=3, n_iter=100, n_burnin=50, thin=2) {
+    
+    cat(paste("\n\n--- RUNNING SCENARIO:", scenario_title, "---\n"))
+    
+    # --- 1. Generate Data ---
+    set.seed(123) # Use same seed for comparable datasets
+    n_pts <- 32; time_pts <- seq(0,1,length.out=n_pts); m_out <- 3
+    B_norm <- matrix(c(1,0.8,0.7,0.8,1,0.6,0.7,0.6,1),3,3); k_params_norm <- list(l_scale=0.3); eta_norm <- rep(0.05,3)
+    
+    all_curves <- list()
+    true_z <- c(rep(1, n_normal), rep(2, n_anomalous))
+    
+    # Generate normal curves
+    for(i in 1:n_normal) {
+        all_curves[[i]] <- generate_normal_data_icm(n_pts,m_out,B_norm,eta_norm,squared_exp_kernel,k_params_norm)$y
+    }
+    # Generate anomalous curves
+    for(i in 1:n_anomalous) {
+        normal_base <- generate_normal_data_icm(n_pts,m_out,B_norm,eta_norm,squared_exp_kernel,k_params_norm)
+        all_curves[[n_normal+i]] <- anomaly_function(normal_base)$y
+    }
+    
+    # --- 2. Plot Ground Truth ---
+    par(mfrow=c(1,2), mar=c(4,4,3,1))
+    # Plot normal curves
+    y_range <- range(unlist(all_curves))
+    matplot(time_pts, all_curves[[1]], type='l', lty=1, col=rgb(0,0,0.8,0.5),
+            main=paste("Ground Truth:", scenario_title), ylab="Value", xlab="Time", ylim=y_range)
+    for(i in 2:n_normal) { matlines(time_pts, all_curves[[i]], type='l', lty=1, col=rgb(0,0,0.8,0.5)) }
+    # Plot anomalous curves
+    for(i in (n_normal+1):(n_normal+n_anomalous)) { matlines(time_pts, all_curves[[i]], type='l', lty=1, col=rgb(0.8,0,0,0.6)) }
+    legend("topright", legend=c("Normal", "Anomalous"), col=c("darkblue", "darkred"), lty=1, bty="n")
+
+    # --- 3. Run the MCMC Model ---
+    # WARNING: This is a minimal run to prevent crashing. It is NOT long enough for convergence.
+    results <- run_full_mv_model(all_curves, time_pts, kernel_config_full, 
+                                 n_iter=n_iter, n_burnin=n_burnin, thin=thin)
+    
+    # --- 4. Analyze and Plot Model Results ---
+    final_z <- results$z[nrow(results$z),]
+    # Relabel clusters for consistency (assign label '1' to the cluster containing the most true normals)
+    if(length(unique(final_z)) > 1) {
+      if(mean(final_z[1:n_normal]) > 1.5) { final_z <- (max(final_z)+1) - final_z }
+    }
+    final_z <- as.numeric(factor(final_z)) # Make labels contiguous (1, 2, ...)
+    
+    cat("Confusion Matrix:\n"); print(table(True=true_z, Found=final_z))
+    
+    # Plot model-found clusters
+    found_clusters <- unique(final_z)
+    colors <- c(rgb(0,0,0.8,0.5), rgb(0.8,0,0,0.6), rgb(0,0.6,0,0.6), "orange", "purple")
+    
+    plot(NA, xlim=range(time_pts), ylim=y_range, main="Model-Found Clusters", ylab="", xlab="Time")
+    for (k in found_clusters) {
+        idx_in_cluster <- which(final_z == k)
+        for(i in idx_in_cluster) { matlines(time_pts, all_curves[[i]], type='l', lty=1, col=colors[k]) }
+    }
+    legend("topright", legend=paste("Cluster", found_clusters), col=colors[found_clusters], lty=1, bty="n")
+    
+    return(results)
+}
+```
+
+```{r}
+################################################################################
+##
+## PART 6: MAIN EXECUTION BLOCK
+##
+################################################################################
+
+# WARNING: This will be VERY slow. Each scenario runs the full MCMC sampler.
+# For a quick test, you might only run the first scenario.
+# A real analysis would require n_iter=2000, n_burnin=1000, thin=10 or more.
+
+# --- Scenario 1: Shape Anomaly ---
+results_shape <- run_and_visualize_scenario(
+    anomaly_function = apply_shape_anomaly,
+    scenario_title = "Shape Anomaly",
+    n_iter=10000, n_burnin=2000, thin=5
+)
+```
+
+```{r}
+# --- Scenario 2: Decouple Anomaly ---
+results_decouple <- run_and_visualize_scenario(
+    anomaly_function = apply_decouple_anomaly,
+    scenario_title = "Decouple Anomaly",
+    n_iter=50, n_burnin=20, thin=5
+)
+
+# --- Scenario 3: Trend Anomaly ---
+results_trend <- run_and_visualize_scenario(
+    anomaly_function = apply_trend_anomaly,
+    scenario_title = "Trend Anomaly",
+    n_iter=50, n_burnin=20, thin=5
+)
+```
+
+
+
+
+

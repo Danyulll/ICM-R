@@ -1,0 +1,11 @@
+type=spikes
+N=10
+P=16
+M=3
+frac_anom=0.050
+seed=101
+n_iter=200
+burn=100
+thin=1
+use_besov_pi=TRUE
+use_besov_g=TRUE

@@ -1,0 +1,12 @@
+type=warp
+N=5
+P=16
+M=3
+frac_anom=0.100
+seed=101
+n_iter=20
+burn=10
+thin=2
+use_besov_pi=TRUE
+use_besov_g=TRUE
+revealed_normals=5
