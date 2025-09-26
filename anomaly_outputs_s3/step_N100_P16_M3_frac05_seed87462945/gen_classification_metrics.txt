@@ -1,0 +1,36 @@
+=== CLASSIFICATION METRICS ===
+Dataset: C:/Users/Daniel/Desktop/temp/ICM-R/anomaly_outputs_s3/step_N100_P16_M3_frac05_seed87462945/gen
+Total samples: 100
+True anomalies: 5
+True normals: 95
+
+--- DAHL CLUSTERING ---
+Predicted anomalies: 7
+True Positives: 3
+True Negatives: 91
+False Positives: 4
+False Negatives: 2
+Accuracy: 0.9400
+Precision: 0.4286
+Recall (Sensitivity): 0.6000
+Specificity: 0.9579
+F1-Score: 0.5000
+AUC: 0.7789
+
+--- MAP CLUSTERING ---
+Predicted anomalies: 7
+True Positives: 3
+True Negatives: 91
+False Positives: 4
+False Negatives: 2
+Accuracy: 0.9400
+Precision: 0.4286
+Recall (Sensitivity): 0.6000
+Specificity: 0.9579
+F1-Score: 0.5000
+AUC: 0.7789
+
+--- COMPARISON ---
+DAHL vs MAP Accuracy: 0.9400 vs 0.9400
+DAHL vs MAP F1-Score: 0.5000 vs 0.5000
+DAHL vs MAP AUC: 0.7789 vs 0.7789

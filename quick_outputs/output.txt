@@ -1,0 +1,127 @@
+=== SUMMARY OF ALL RUNS ===
+
+spikes:
+  Run name: spikes_N50_P16_M3_frac15_seed43
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.840, F1: 0.000
+  MAP  - Accuracy: 0.840, F1: 0.000
+
+burst:
+  Run name: burst_N50_P16_M3_frac15_seed44
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.180, F1: 0.128
+  MAP  - Accuracy: 0.180, F1: 0.128
+
+varb:
+  Run name: varb_N50_P16_M3_frac15_seed45
+  Final K (Dahl): 3
+  Final K (MAP): 3
+  Dahl - Accuracy: 0.860, F1: 0.222
+  MAP  - Accuracy: 0.860, F1: 0.222
+
+step:
+  Run name: step_N50_P16_M3_frac15_seed46
+  Final K (Dahl): 4
+  Final K (MAP): 4
+  Dahl - Accuracy: 0.760, F1: 0.500
+  MAP  - Accuracy: 0.780, F1: 0.522
+
+ramp:
+  Run name: ramp_N50_P16_M3_frac15_seed47
+  Final K (Dahl): 5
+  Final K (MAP): 5
+  Dahl - Accuracy: 0.200, F1: 0.167
+  MAP  - Accuracy: 0.200, F1: 0.167
+
+fchg:
+  Run name: fchg_N50_P16_M3_frac15_seed48
+  Final K (Dahl): 1
+  Final K (MAP): 1
+  Dahl - Accuracy: 0.860, F1: 0.000
+  MAP  - Accuracy: 0.860, F1: 0.000
+
+phase:
+  Run name: phase_N50_P16_M3_frac15_seed49
+  Final K (Dahl): 3
+  Final K (MAP): 3
+  Dahl - Accuracy: 0.800, F1: 0.167
+  MAP  - Accuracy: 0.820, F1: 0.182
+
+corr:
+  Run name: corr_N50_P16_M3_frac15_seed50
+  Final K (Dahl): 4
+  Final K (MAP): 4
+  Dahl - Accuracy: 0.260, F1: 0.213
+  MAP  - Accuracy: 0.260, F1: 0.245
+
+warp:
+  Run name: warp_N50_P16_M3_frac15_seed51
+  Final K (Dahl): 1
+  Final K (MAP): 1
+  Dahl - Accuracy: 0.860, F1: 0.000
+  MAP  - Accuracy: 0.860, F1: 0.000
+
+drop:
+  Run name: drop_N50_P16_M3_frac15_seed52
+  Final K (Dahl): 4
+  Final K (MAP): 3
+  Dahl - Accuracy: 0.660, F1: 0.190
+  MAP  - Accuracy: 0.700, F1: 0.286
+
+swap:
+  Run name: swap_N50_P16_M3_frac15_seed53
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.840, F1: 0.000
+  MAP  - Accuracy: 0.840, F1: 0.000
+
+gsc:
+  Run name: gsc_N50_P16_M3_frac15_seed54
+  Final K (Dahl): 1
+  Final K (MAP): 1
+  Dahl - Accuracy: 0.860, F1: 0.000
+  MAP  - Accuracy: 0.860, F1: 0.000
+
+vglob:
+  Run name: vglob_N50_P16_M3_frac15_seed55
+  Final K (Dahl): 3
+  Final K (MAP): 3
+  Dahl - Accuracy: 0.960, F1: 0.833
+  MAP  - Accuracy: 0.940, F1: 0.727
+
+vchan:
+  Run name: vchan_N50_P16_M3_frac15_seed56
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.280, F1: 0.182
+  MAP  - Accuracy: 0.260, F1: 0.178
+
+vgroup:
+  Run name: vgroup_N50_P16_M3_frac15_seed57
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.800, F1: 0.286
+  MAP  - Accuracy: 0.800, F1: 0.286
+
+vstep:
+  Run name: vstep_N50_P16_M3_frac15_seed58
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.840, F1: 0.000
+  MAP  - Accuracy: 0.840, F1: 0.000
+
+vbump:
+  Run name: vbump_N50_P16_M3_frac15_seed59
+  Final K (Dahl): 2
+  Final K (MAP): 2
+  Dahl - Accuracy: 0.240, F1: 0.240
+  MAP  - Accuracy: 0.240, F1: 0.240
+
+vdir:
+  Run name: vdir_N50_P16_M3_frac15_seed60
+  Final K (Dahl): 5
+  Final K (MAP): 5
+  Dahl - Accuracy: 0.240, F1: 0.208
+  MAP  - Accuracy: 0.240, F1: 0.240

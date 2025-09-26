@@ -1,0 +1,51 @@
+Coda MCMC Diagnostics Summary
+============================
+
+K:
+  Mean: 2.4287
+  SD: 0.5126
+  ESS: 2.0
+  Geweke z (mean): 12.2772
+  Heidel-Welch passed: No/NA
+
+alpha:
+  Mean: 1.3204
+  SD: 0.5973
+  ESS: 410.5
+  Geweke z (mean): 4.3169
+  Heidel-Welch passed: No/NA
+
+kernel_idx:
+  Mean: 3.0000
+  SD: 0.0000
+  ESS: 0.0
+  Geweke z (mean): NaN
+  Heidel-Welch passed: No/NA
+
+acceptance_L:
+  Mean: 5.8457
+  SD: 1.0815
+  ESS: 68.7
+  Geweke z (mean): 1.8457
+  Heidel-Welch passed: No/NA
+
+acceptance_eta:
+  Mean: 22.4756
+  SD: 2.5870
+  ESS: 85.7
+  Geweke z (mean): 3.1715
+  Heidel-Welch passed: No/NA
+
+acceptance_kernel:
+  Mean: 3.7472
+  SD: 1.1343
+  ESS: 19.7
+  Geweke z (mean): 6.1204
+  Heidel-Welch passed: No/NA
+
+acceptance_tauB:
+  Mean: 5.1187
+  SD: 1.2832
+  ESS: 14.4
+  Geweke z (mean): 5.1574
+  Heidel-Welch passed: No/NA

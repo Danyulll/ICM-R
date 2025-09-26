@@ -1,0 +1,14 @@
+type=step
+N=100
+P=16
+M=3
+frac_anom=0.050
+seed=87462945
+n_iter=7000
+burn=3000
+thin=5
+use_besov_pi=TRUE
+use_besov_g=TRUE
+revealed_normals=8,9,19,20,33,34,36,40,41,42,44,47,56,59,64,66,71,77,81,82,86,88,95
+Dahl: K_hat=3, s_hat=30, normal_cluster=1, anomaly_clusters=2,3
+MAP:  K_map=3, s_map=259, mode_count=104, normal_cluster=1, anomaly_clusters=2,3

@@ -1,0 +1,1 @@
+K_mean=2.43, K_mode=2, alpha_mean=1.320
